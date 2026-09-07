@@ -2,10 +2,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
+from app.core.logging_config import configure_logging
 from app.db.base import Base
 from app.db.session import engine
 from app.db import models
 from app.api import health, scan, policy, auth
+
+configure_logging()
 
 app = FastAPI(title=settings.PROJECT_NAME)
 

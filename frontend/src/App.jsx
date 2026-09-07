@@ -5,7 +5,8 @@ import Layout from "./components/Layout";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import Admin from "./pages/Admin";
-import Dashboard from "./pages/DashBoard";
+import Dashboard from "./pages/Dashboard";
+import ScanDetail from "./pages/ScanDetail";
 
 export default function App() {
   return (
@@ -20,6 +21,16 @@ export default function App() {
               <ProtectedRoute>
                 <Layout>
                   <Dashboard />
+                </Layout>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/scans/:scanId"
+            element={
+              <ProtectedRoute>
+                <Layout>
+                  <ScanDetail />
                 </Layout>
               </ProtectedRoute>
             }

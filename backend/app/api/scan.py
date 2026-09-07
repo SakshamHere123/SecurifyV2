@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.db.models import Scan, Finding
+from app.db.models import Scan, Finding, LLMUsage
 from app.core.deps import get_current_user, CurrentUser
 from app.services.parser import parse_terraform_file, extract_raw_resource_blocks
 from app.services.static_scan import run_checkov
@@ -15,7 +15,8 @@ from app.services.findings import normalize_checkov_findings
 from app.services.ai_analyzer import analyze_resources
 from app.services.remediation_agent import remediate_violations
 from app.services.controller_agent import run_scan_pipeline
-from app.services.scan_service import create_and_run_scan
+from app.services.scan_service import create_pending_scan
+from app.tasks.scan_tasks import run_scan_task
 from app.services.diff_builder import build_scan_diffs
 
 router = APIRouter()
@@ -120,11 +121,17 @@ async def run_full_scan(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(get_current_user),
 ):
+    """Phase 7 (Part 1): saves the upload and enqueues the scan, then
+    returns IMMEDIATELY -- it does not wait for the pipeline to finish.
+    The frontend now has to poll GET /scan/{scan_id} to find out when it's
+    actually done (that's Part 2). status will be "pending" in this
+    response, not "completed" -- that's expected, not a bug.
+    """
     if not file.filename.endswith(".tf"):
         raise HTTPException(status_code=400, detail="Only .tf files are accepted")
 
     file_bytes = await file.read()
-    scan = create_and_run_scan(
+    scan = create_pending_scan(
         db,
         org_id=current_user.org_id,
         user_id=current_user.user_id,
@@ -132,11 +139,11 @@ async def run_full_scan(
         file_bytes=file_bytes,
     )
 
+    run_scan_task.delay(scan.id)
+
     return {
         "scan_id": scan.id,
         "status": scan.status,
-        "retry_count": scan.retry_count,
-        "output_tf_path": scan.output_tf_path,
     }
 
 
@@ -175,15 +182,37 @@ def get_scan(scan_id: str, db: Session = Depends(get_db), current_user: CurrentU
     scan = _get_owned_scan(db, scan_id, current_user)
     findings = db.query(Finding).filter(Finding.scan_id == scan_id).all()
 
+    # Phase 7 Part 4: per-agent token/cost breakdown, written by
+    # llm_client.call_structured as each LLM call completes.
+    usage_rows = (
+        db.query(LLMUsage).filter(LLMUsage.scan_id == scan_id).order_by(LLMUsage.created_at).all()
+    )
+
     return {
         "scan_id": scan.id,
         "status": scan.status,
+        "current_step": scan.current_step,
         "retry_count": scan.retry_count,
         "input_tf_path": scan.input_tf_path,
         "output_tf_path": scan.output_tf_path,
         "report_path": scan.report_path,
         "created_at": scan.created_at,
         "completed_at": scan.completed_at,
+        "usage": {
+            "total_tokens": sum(u.total_tokens for u in usage_rows),
+            "total_cost_usd": round(sum(u.cost_usd for u in usage_rows), 6),
+            "calls": [
+                {
+                    "agent": u.agent,
+                    "model": u.model,
+                    "prompt_tokens": u.prompt_tokens,
+                    "completion_tokens": u.completion_tokens,
+                    "total_tokens": u.total_tokens,
+                    "cost_usd": u.cost_usd,
+                }
+                for u in usage_rows
+            ],
+        },
         "findings": [
             {
                 "resource": f.resource,

@@ -1,31 +1,27 @@
+import glob
+import logging
 import os
 from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from app.db.models import Scan, Finding, ScanStatus
-from app.services.parser import parse_terraform_file, extract_raw_resource_blocks
-from app.services.static_scan import run_checkov
-from app.services.findings import normalize_checkov_findings
+from app.core.logging_config import current_scan_id
+from app.db.models import Finding, Scan, ScanStatus
+from app.db.session import SessionLocal
 from app.services.controller_agent import run_scan_pipeline
 from app.services.diff_builder import build_scan_diffs
+from app.services.findings import normalize_checkov_findings
+from app.services.parser import extract_raw_resource_blocks, parse_terraform_file
 from app.services.report_generator import generate_report_pdf
+from app.services.static_scan import run_checkov
 
+logger = logging.getLogger(__name__)
 SCAN_STORAGE_DIR = "/app/storage/scans"
 
 
-def create_and_run_scan(db: Session, org_id: str, user_id: str, filename: str, file_bytes: bytes) -> Scan:
-    """Runs the full Phase 4 pipeline AND persists it properly:
-
-    1. Creates the Scan row FIRST (status=pending) -- so even if something
-       crashes mid-pipeline, there's a durable record that a scan was
-       attempted, not silence.
-    2. Saves the uploaded file to durable per-scan storage.
-    3. Runs parse -> Checkov -> Controller (Analyzer/Remediation/Validator loop).
-    4. Writes the corrected .tf, builds the diff, generates the PDF report,
-       and creates one Finding row per violation.
-    5. Marks the scan completed -- or failed, with the partial record kept,
-       if anything raised.
+def create_pending_scan(db: Session, org_id: str, user_id: str, filename: str, file_bytes: bytes) -> Scan:
+    """Creates the Scan row and saves the uploaded file to durable storage,
+    then returns immediately -- it does NOT run the pipeline.
     """
     scan = Scan(org_id=org_id, user_id=user_id, status=ScanStatus.PENDING, input_tf_path="")
     db.add(scan)
@@ -34,29 +30,66 @@ def create_and_run_scan(db: Session, org_id: str, user_id: str, filename: str, f
 
     scan_dir = os.path.join(SCAN_STORAGE_DIR, scan.id)
     input_dir = os.path.join(scan_dir, "input")
-    output_dir = os.path.join(scan_dir, "output")
     os.makedirs(input_dir, exist_ok=True)
-    os.makedirs(output_dir, exist_ok=True)
 
     input_path = os.path.join(input_dir, filename)
     with open(input_path, "wb") as f:
         f.write(file_bytes)
 
     scan.input_tf_path = input_path
-    scan.status = ScanStatus.RUNNING
     db.commit()
+    db.refresh(scan)
+    return scan
 
+
+def run_scan_job(scan_id: str) -> None:
+    """Runs the actual pipeline for an already-created scan. This is the
+    function the Celery worker calls.
+    """
+    current_scan_id.set(scan_id)
+    logger.info("Scan job started")
+
+    db = SessionLocal()
     try:
-        parsed = parse_terraform_file(input_path)
-        raw_blocks = extract_raw_resource_blocks(input_path)
+        scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if not scan:
+            logger.warning("Scan job started but scan_id no longer exists in DB")
+            return
+
+        def report_step(step: str):
+            """Persists the pipeline's current step immediately."""
+            scan.current_step = step
+            db.commit()
+
+        scan.status = ScanStatus.RUNNING
+        report_step("parsing")
+
+        input_path = scan.input_tf_path
+        input_dir = os.path.dirname(input_path)
+        scan_dir = os.path.dirname(input_dir)
+        output_dir = os.path.join(scan_dir, "output")
+        os.makedirs(output_dir, exist_ok=True)
+        filename = os.path.basename(input_path)
+
+        # Run parsing directly in worker environment
+        tf_files = glob.glob(os.path.join(input_dir, "*.tf"))
+        target_tf_file = tf_files[0] if tf_files else input_path
+
+        parsed = parse_terraform_file(target_tf_file) if os.path.exists(target_tf_file) else {"resource_count": 0, "resources": []}
+        raw_blocks = extract_raw_resource_blocks(target_tf_file) if os.path.exists(target_tf_file) else {}
+        logger.info("Parsed %d resources", parsed.get("resource_count", 0))
+
+        report_step("static_analysis")
         checkov_raw = run_checkov(input_dir)
         static_findings = normalize_checkov_findings(checkov_raw)
+        logger.info("Checkov found %d static findings", len(static_findings))
 
         result = run_scan_pipeline(
-            org_id=org_id,
+            org_id=scan.org_id,
             resources=parsed["resources"],
             static_findings=static_findings,
             raw_blocks=raw_blocks,
+            on_step=report_step,
         )
 
         output_path = os.path.join(output_dir, filename)
@@ -80,22 +113,27 @@ def create_and_run_scan(db: Session, org_id: str, user_id: str, filename: str, f
             diffs=diffs,
         )
         scan.report_path = report_path
+        scan.current_step = "done"
 
         db.commit()
-        db.refresh(scan)
-        return scan
+        logger.info(
+            "Scan job completed: status=%s retries=%d all_resolved=%s",
+            scan.status.value, scan.retry_count, result["all_resolved"],
+        )
 
     except Exception:
-        scan.status = ScanStatus.FAILED
-        db.commit()
+        db.rollback()
+        logger.exception("Scan job failed")
+        failed_scan = db.query(Scan).filter(Scan.id == scan_id).first()
+        if failed_scan:
+            failed_scan.status = ScanStatus.FAILED
+            db.commit()
         raise
+    finally:
+        db.close()
 
 
 def _build_findings_list(result: dict) -> list[dict]:
-    """Flattens the controller's violations + findings_status into one plain
-    list of dicts -- the shared shape both Postgres persistence AND the PDF
-    report are built from, so the two can never silently drift apart.
-    """
     resolved_by_key = {
         (f["resource"], f["issue"]): f["resolved"] for f in result.get("findings_status", [])
     }

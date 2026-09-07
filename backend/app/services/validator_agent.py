@@ -1,6 +1,10 @@
+import logging
+
 from app.schemas.agent_schemas import ValidatorOutput, ValidatorFindingStatus, Violation
 from app.services.static_scan import run_checkov
 from app.services.findings import normalize_checkov_findings
+
+logger = logging.getLogger(__name__)
 
 
 def validate_remediation(tf_dir: str, original_violations: list[Violation]) -> ValidatorOutput:
@@ -16,6 +20,7 @@ def validate_remediation(tf_dir: str, original_violations: list[Violation]) -> V
 
     parsing_errors = checkov_raw.get("summary", {}).get("parsing_errors", 0)
     if parsing_errors:
+        logger.warning("Remediated Terraform failed to parse (%d parsing error(s)) -- treating all as unresolved", parsing_errors)
         # The remediated file failed to parse as valid HCL at all -- this is
         # a harder failure than "violation still present." Zero findings from
         # a broken parse looks identical to zero findings from a clean file,

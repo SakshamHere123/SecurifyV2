@@ -6,8 +6,8 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-slate-50">
-        <p className="text-sm text-slate-500">Loading...</p>
+      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+        <p className="text-slate-500 text-sm">Loading...</p>
       </div>
     );
   }
@@ -16,6 +16,9 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
     return <Navigate to="/login" replace />;
   }
 
+  // Even though the Admin panel link is only shown to admins in the sidebar,
+  // that's a UI convenience, not a security boundary -- a non-admin could
+  // still type /admin into the URL bar directly. This is the real gate.
   if (adminOnly && user.role !== "admin") {
     return <Navigate to="/" replace />;
   }

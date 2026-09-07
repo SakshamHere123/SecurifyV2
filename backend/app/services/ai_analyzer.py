@@ -1,6 +1,10 @@
+import logging
+
 from app.schemas.agent_schemas import AnalyzerOutput
 from app.services.llm_client import call_structured
 from app.services.retrieval import retrieve_relevant_policy
+
+logger = logging.getLogger(__name__)
 
 ANALYZER_SYSTEM_PROMPT = """You are a cloud security analyst reviewing Terraform \
 infrastructure code for a specific company. You are given, for each resource:
@@ -69,8 +73,10 @@ def analyze_resources(org_id: str, resources: list[dict], static_findings: list[
     resource_blocks = [_build_resource_context(r, static_findings, org_id) for r in resources]
     user_prompt = "\n\n---\n\n".join(resource_blocks)
 
+    logger.info("Calling Analyzer LLM for %d resource(s)", len(resources))
     return call_structured(
         system_prompt=ANALYZER_SYSTEM_PROMPT,
         user_prompt=user_prompt,
         response_model=AnalyzerOutput,
+        agent="analyzer",
     )

@@ -1,5 +1,9 @@
+import logging
+
 from app.schemas.agent_schemas import RemediationOutput, Violation
 from app.services.llm_client import call_structured
+
+logger = logging.getLogger(__name__)
 
 REMEDIATION_SYSTEM_PROMPT = """You are a Terraform security engineer. You are given, \
 for each resource that has confirmed violations:
@@ -58,6 +62,7 @@ def remediate_violations(resources: list[dict], violations: list[Violation]) -> 
 
     if not violations_by_resource:
         # Nothing to fix -- don't waste an LLM call on an empty violation list
+        logger.info("Remediation: no violations to fix, skipping LLM call")
         return RemediationOutput(fixes=[])
 
     blocks = []
@@ -72,6 +77,7 @@ def remediate_violations(resources: list[dict], violations: list[Violation]) -> 
 
     user_prompt = "\n\n---\n\n".join(blocks)
 
+    logger.info("Calling Remediation LLM for %d resource(s)", len(violations_by_resource))
     return call_structured(
         system_prompt=REMEDIATION_SYSTEM_PROMPT,
         user_prompt=user_prompt,

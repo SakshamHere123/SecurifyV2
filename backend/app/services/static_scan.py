@@ -1,5 +1,8 @@
 import json
+import logging
 import subprocess
+
+logger = logging.getLogger(__name__)
 
 
 def run_checkov(tf_dir: str) -> dict:
@@ -13,6 +16,7 @@ def run_checkov(tf_dir: str) -> dict:
     it only has to reason about company-specific policy on top of what
     Checkov already caught.
     """
+    logger.info("Running Checkov against %s", tf_dir)
     result = subprocess.run(
         ["checkov", "-d", tf_dir, "-o", "json", "--quiet", "--compact"],
         capture_output=True,
@@ -23,4 +27,5 @@ def run_checkov(tf_dir: str) -> dict:
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError:
+        logger.error("Checkov produced no valid JSON output: %s", result.stderr[:500])
         return {"error": "checkov produced no valid JSON output", "stderr": result.stderr}

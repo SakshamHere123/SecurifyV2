@@ -6,8 +6,8 @@ export default function ProtectedRoute({ children, adminOnly = false }) {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <p className="text-slate-500 text-sm">Loading...</p>
+      <div className="flex items-center justify-center min-h-screen bg-slate-50">
+        <p className="text-sm text-slate-500">Loading...</p>
       </div>
     );
   }

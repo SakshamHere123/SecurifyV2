@@ -1,0 +1,43 @@
+resource "aws_iam_role" "iam_105" {
+  name = "app-iam_105"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+  tags = { CostCenter = "eng-platform" }
+}
+
+resource "aws_s3_bucket" "s3_105" {
+  bucket = "s3_105-2625"
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        sse_algorithm = "aws:kms"
+      }
+    }
+  }
+  logging {
+    target_bucket = "s3_105-logs-4404"
+    target_prefix = "log/"
+  }
+  tags = {
+    Environment = "production"
+    CostCenter  = "eng-platform"
+  }
+}
+
+resource "aws_security_group" "security_group_105" {
+  name        = "security_group_105"
+  description = "sg"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}

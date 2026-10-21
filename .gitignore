@@ -36,3 +36,8 @@ docker-compose.override.yml
 *.swo
 .DS_Store
 Thumbs.db
+
+# Securify evaluation generated files
+evaluation/__pycache__/
+evaluation/.eval_store/
+evaluation/results/
